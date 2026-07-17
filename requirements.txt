@@ -1,0 +1,11 @@
+xarray
+numpy
+pandas
+matplotlib
+scipy
+statsmodels
+cartopy
+netCDF4
+pyhdf
+tqdm
+cfgrib
