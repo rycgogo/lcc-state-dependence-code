@@ -62,13 +62,17 @@ final analysis dataset.
   Hersbach et al. (2020), *Quarterly Journal of the Royal Meteorological
   Society*, 146, 1999–2049, https://doi.org/10.1002/qj.3803.
 
+
+
 ## Scope and retained source files
 
-The public package preserves the final 2.5-degree monthly analysis dataset,
-not the multi-gigabyte source files. Local ERA5 source files may be retained
-outside the Zenodo package for audit. The historical
-`ERA5_EIS_Omega_Monthly_1deg_2006-2023.nc` file is excluded: its omega variable
-is documented as 500 hPa and is not the 700-hPa omega used in this study.
+The Zenodo archive contains the final processed monthly analysis dataset used to reproduce the manuscript figures for January 2007–December 2021. The analysis is conducted on a 2° latitude × 5° longitude grid. The `2.5deg` text in the archived filename is a legacy filename only and does not describe the actual grid resolution.
+
+The archive does not redistribute the multi-gigabyte third-party CALIPSO, MODIS, and ERA5 source files. These products remain available from their respective official repositories and are documented in this file. Local copies of the ERA5 source files may be retained for audit purposes.
+
+The historical file `ERA5_EIS_Omega_Monthly_1deg_2006-2023.nc` is not included in the archive and was not used for the final analysis, because its vertical-velocity variable is documented at 500 hPa, whereas this study uses vertical velocity at 700 hPa.
+
+The archived processed dataset includes the variables required to reproduce Figures 1–6, including low-cloud-cover fields, surface temperature, estimated inversion strength, vertical velocity at 700 hPa, temperature advection, and sea-ice concentration. Reproducing the complete preprocessing workflow additionally requires the original ERA5 geopotential and relative-humidity fields, together with the corresponding CDS download requests.
 
 The local raw files currently do not include the ERA5 geopotential and relative
 humidity fields required to recompute EIS from first principles. This does not
