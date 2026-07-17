@@ -59,7 +59,7 @@ The required packages are listed in `requirements.txt`, including `xarray`, `num
 ```text
 data/LCC_CALIPSO_MODIS_ERA5_Tadv_2.5deg_monthly_2007-2021.nc
 ```
-
+> Note: The filename contains `2.5deg` for historical reasons. The actual analysis grid is 2° latitude × 5° longitude, as documented in the manuscript and dataset metadata.
 4. The scripts in `code/figures/` resolve this path automatically and write generated figures and CSV files to `outputs/`.
 
 > **Important consistency check before release:** the current manuscript describes a common grid of 2° latitude × 5° longitude, while the archived package filename uses `2.5deg`. Confirm the actual grid in the deposited NetCDF metadata and make the manuscript, filename, and this README consistent before final submission.
