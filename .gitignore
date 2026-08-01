@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+outputs/
+derived_intermediate/
+raw_inputs/
+data/
+.DS_Store

@@ -68,7 +68,7 @@ from pathlib import Path
 # is not a separate publication artifact; its derived Tadv field is included
 # in this NetCDF file.
 project_dir = Path(__file__).resolve().parents[2]
-file_path = project_dir / "data" / "LCC_CALIPSO_MODIS_ERA5_Tadv_2.5deg_monthly_2007-2021.nc"
+file_path = project_dir / "data" / "LCC_CALIPSO_MODIS_ERA5_Tadv_2degx5deg_monthly_2007-2021.nc"
 
 # 读取 NetCDF 文件
 ds = xr.open_dataset(file_path)
