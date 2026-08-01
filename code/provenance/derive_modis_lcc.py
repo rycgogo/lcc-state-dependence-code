@@ -48,10 +48,10 @@ def calculate_and_save_modis_clow_correct_order():
     project_dir = Path(__file__).resolve().parents[2]
     modis_data_root = project_dir / "raw_inputs" / "modis"
     # <-- [修改] 已更新为正确的文件名
-    calipso_template_file = project_dir / "data" / "LCC_CALIPSO_MODIS_ERA5_Tadv_2.5deg_monthly_2007-2021.nc"
+    calipso_template_file = project_dir / "data" / "LCC_CALIPSO_MODIS_ERA5_Tadv_2degx5deg_monthly_2007-2021.nc"
     start_year = 2007
     end_year = 2021
-    output_filename = project_dir / "derived_intermediate" / "modis_lcc_2.5deg_monthly_2007-2021.nc"
+    output_filename = project_dir / "derived_intermediate" / "modis_lcc_2degx5deg_monthly_2007-2021.nc"
     output_filename.parent.mkdir(parents=True, exist_ok=True)
 
     # --- 变量定义 ---

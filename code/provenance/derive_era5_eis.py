@@ -987,5 +987,5 @@ def plot_global_eis(input_file_path):
 if __name__ == '__main__':
     # 我们刚刚创建的文件的路径
     project_dir = Path(__file__).resolve().parents[2]
-    final_file = project_dir / "data" / "LCC_CALIPSO_MODIS_ERA5_Tadv_2.5deg_monthly_2007-2021.nc"
+    final_file = project_dir / "data" / "LCC_CALIPSO_MODIS_ERA5_Tadv_2degx5deg_monthly_2007-2021.nc"
     plot_global_eis(final_file)
