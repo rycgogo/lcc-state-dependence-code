@@ -5,14 +5,13 @@ Python code used to generate Figures 1--3 and Supporting Figures S1--S3 for the 
 ## Data access
 
 The processed monthly analysis dataset on a 2° latitude × 5° longitude grid for January 2007--December
-2021 is archived separately on Zenodo: **https://doi.org/10.5281/zenodo.21409565**.
-Download the NetCDF file and place it at:
+2021 is included in this repository at:
 
 ```text
 data/LCC_CALIPSO_MODIS_ERA5_Tadv_2degx5deg_monthly_2007-2021.nc
 ```
 
-The five scripts in `code/figures/` then resolve this path automatically.
+The figure scripts in `code/figures/` resolve this path automatically.
 
 ## Run the figure scripts
 
