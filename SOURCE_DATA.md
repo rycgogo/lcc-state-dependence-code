@@ -2,9 +2,9 @@
 
 This file documents the third-party source products used to create the
 processed dataset in `data/`. Do **not** upload copies of these source products
-to the Zenodo record unless their licences and repository policies explicitly
-allow redistribution. Cite them in the manuscript and retain this file in the
-Zenodo software/data package.
+to this repository unless their licences and repository policies explicitly
+allow redistribution. Cite them in the manuscript and retain this file with the
+public code and data package.
 
 ## CALIPSO
 
@@ -66,7 +66,7 @@ final analysis dataset.
 
 The public package preserves the final monthly analysis dataset on a 2° latitude × 5° longitude grid,
 not the multi-gigabyte source files. Local ERA5 source files may be retained
-outside the Zenodo package for audit. The historical
+outside the public package for audit. The historical
 `ERA5_EIS_Omega_Monthly_1deg_2006-2023.nc` file is excluded: its omega variable
 is documented as 500 hPa and is not the 700-hPa omega used in this study.
 

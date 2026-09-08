@@ -1,981 +1,449 @@
-# ==========================================================
-# fig03_lcc_sensitivity.py
-#
-# Purpose
-# -------
-# This script generates Fig. 3 of the manuscript.
-# The figure combines two diagnostics of low-cloud cover (LCC)
-# sensitivity to five cloud-controlling factors (CCFs).
-#
-# Figure layout
-# -------------
-# The figure contains 5 rows and 4 columns:
-#
-#   Columns 1-2:
-#       Global maps of standardized regression coefficients.
-#       Column 1 is based on CALIPSO LCC.
-#       Column 2 is based on MODIS LCC.
-#
-#   Columns 3-4:
-#       Ts-EIS state-space maps of physical sensitivities.
-#       Column 3 is based on CALIPSO LCC.
-#       Column 4 is based on MODIS LCC.
-#
-# Variables shown from top to bottom:
-#   1. surface temperature (Ts)
-#   2. estimated inversion strength (EIS)
-#   3. 700 hPa vertical velocity (omega)
-#   4. horizontal temperature advection (T_adv)
-#   5. sea ice concentration (SIC)
-#
-# Regression design
-# -----------------
-# For the global maps, monthly anomalies of LCC and CCFs are
-# deseasonalized and standardized at each grid box before multiple
-# linear regression. The resulting coefficients are standardized
-# sensitivities.
-#
-# For the Ts-EIS state-space panels, monthly anomalies are grouped
-# into Ts-EIS bins. Within each bin, non-standardized multiple linear
-# regression is performed to estimate physical sensitivities:
-#
-#   dLCC/dTs, dLCC/dEIS, dLCC/domega, dLCC/dT_adv, and dLCC/dSIC.
-#
-# Unit conversions
-# ----------------
-# - Ts is converted from K to °C if necessary.
-# - SIC is converted from fraction to percent if necessary.
-# - omega is converted from Pa/s to hPa/day for state-space regression.
-# - T_adv is converted from K/s to K/day for state-space regression.
-#
-# Outputs
-# -------
-# 1. Figure3_LCC_Sensitivity_Global_StateSpace.png
-# 2. Figure3_LCC_Sensitivity_StateSpace_Data.csv
-#
-# ==========================================================
+"""Generate manuscript Figure 3 from monthly fields aggregated to 10° × 10°.
 
-import xarray as xr
-import numpy as np
-import matplotlib.pyplot as plt
-import pandas as pd
+The native 2° latitude × 5° longitude monthly fields are first averaged to
+10° × 10° (5 latitude cells × 2 longitude cells). Global standardized
+grid-box regressions and unstandardized Ts–EIS-bin regressions are then
+applied to the aggregated monthly fields.
+"""
+
+from __future__ import annotations
+
 import os
-import statsmodels.api as sm
-import warnings
+from pathlib import Path
 
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 from cartopy.util import add_cyclic_point
-
+import matplotlib.pyplot as plt
 from matplotlib.ticker import MultipleLocator
-from pathlib import Path
+import numpy as np
+import pandas as pd
+import statsmodels.api as sm
+import xarray as xr
 
-# ==========================================================
-# 0. Ignore warnings
-# ==========================================================
-warnings.simplefilter(action="ignore", category=FutureWarning)
 
-# ==========================================================
-# 1. Path settings
-# ==========================================================
-project_dir = Path(__file__).resolve().parents[2]
-file_path = project_dir / "data" / "LCC_CALIPSO_MODIS_ERA5_Tadv_2degx5deg_monthly_2007-2021.nc"
-file_path_omega = file_path
-output_dir = project_dir / "outputs"
+PROJECT_DIR = Path(__file__).resolve().parents[2]
+INPUT_FILE = PROJECT_DIR / "data" / "LCC_CALIPSO_MODIS_ERA5_Tadv_2degx5deg_monthly_2007-2021.nc"
+OUTPUT_DIR = PROJECT_DIR / "outputs"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-output_filename = "Figure3_LCC_Sensitivity_Global_StateSpace.png"
-csv_filename = "Figure3_LCC_Sensitivity_StateSpace_Data.csv"
-
-if not os.path.exists(output_dir):
-    os.makedirs(output_dir)
-
-# ==========================================================
-# ==========================================================
-# 2. Font and plotting parameters
-# ==========================================================
-plt.rcParams["font.family"] = "Times New Roman"
-plt.rcParams["font.serif"] = ["Times New Roman"]
-plt.rcParams["mathtext.fontset"] = "custom"
-plt.rcParams["mathtext.rm"] = "Times New Roman"
-plt.rcParams["mathtext.it"] = "Times New Roman:italic"
-plt.rcParams["mathtext.bf"] = "Times New Roman:bold"
-plt.rcParams["axes.unicode_minus"] = False
-
-plt.rcParams["font.weight"] = "bold"
-plt.rcParams["axes.labelweight"] = "bold"
-plt.rcParams["axes.titleweight"] = "bold"
-
-title_fontsize = 25
-label_fontsize = 26
-tick_fontsize = 23
-cbar_label_fontsize = 25
-cbar_tick_fontsize = 25
-
-font_weight = "bold"
-
-cmap = "RdBu_r"
-
-# Left two columns: global standardized regression coefficient color scale
-global_vmin = -1.0
-global_vmax = 1.0
-
-# Right two columns: state-space physical sensitivity color scale
-# omega has been converted to hPa/day, so the range is set to ±0.20
-state_vlims = {
-    "ts": 5.0,       # % / K
-    "eis": 5.0,      # % / K
-    "omega": 0.20,   # % / (hPa/day)
-    "tadv": 5.0,     # % / (K/day)
-    "sic": 1.0,      # % / %
+VARIABLES = ["ts", "eis", "omega", "tadv", "sic"]
+GLOBAL_COEFFICIENT_ORDER = ["ts", "eis", "omega", "sic", "tadv"]
+COEFFICIENT_LABELS = {
+    "ts": r"$\partial\mathrm{LCC}/\partial \mathrm{Ts}$",
+    "eis": r"$\partial\mathrm{LCC}/\partial\mathrm{EIS}$",
+    "omega": r"$\partial\mathrm{LCC}/\partial\omega$",
+    "tadv": r"$\partial\mathrm{LCC}/\partial T_{adv}$",
+    "sic": r"$\partial\mathrm{LCC}/\partial\mathrm{SIC}$",
 }
-
-state_units = {
+STATE_LIMITS = {"ts": 5.0, "eis": 5.0, "omega": 0.20, "tadv": 5.0, "sic": 1.0}
+STATE_UNITS = {
     "ts": "% / K",
     "eis": "% / K",
-    "omega": "% / (hPa/day)",
-    "tadv": "% / (K/day)",
+    "omega": "% / (hPa day$^{-1}$)",
+    "tadv": "% / (K day$^{-1}$)",
     "sic": "% / %",
 }
-
-min_data_points = 300
-
-# ==========================================================
-# 3. Helper functions
-# ==========================================================
-def compute_edges(centers):
-    """
-    Calculate pcolormesh edges from grid-center coordinates.
-    """
-    centers = np.asarray(centers)
-
-    if len(centers) < 2:
-        return np.array([centers[0] - 0.5, centers[0] + 0.5])
-
-    diff = centers[1] - centers[0]
-    start = centers[0] - diff / 2
-    edges = np.arange(len(centers) + 1) * diff + start
-
-    return edges
+# Coarsening the monthly fields to 10° × 10° reduces the number of
+# spatiotemporal samples in each Ts–EIS bin.  A threshold of 150 retains a
+# reasonably sampled fit while avoiding the unnecessarily sparse coverage
+# produced by the native-grid threshold of 300.
+MIN_STATE_SAMPLES = 150
 
 
-def deseasonalize_robust(da):
-    """
-    Remove the monthly climatological seasonal cycle.
-
-    For each grid box and calendar month, the multi-year monthly mean
-    is subtracted from the original monthly time series.
-    """
-    climatology = da.groupby("time.month").mean(dim="time")
-    aligned = climatology.sel(month=da["time.month"])
-    aligned["time"] = da["time"]
-
-    return da - aligned
-
-
-def standardize_robust_xarray(da):
-    """
-    Standardize an xarray DataArray along the time dimension.
-
-    This is used for the global grid-box regression, so that the
-    regression coefficients represent standardized sensitivities.
-    """
-    std = da.std(dim="time")
-    mean = da.mean(dim="time")
-
-    return ((da - mean) / std).where(std > 1e-6)
+def harmonize(dataset: xr.Dataset) -> xr.Dataset:
+    names = ["calipso_lcc", "modis_lcc", "ts", "eis", "omega", "sic", "tadv"]
+    ds = dataset[names].copy()
+    for name in names:
+        ds[name] = ds[name].transpose("time", "latitude", "longitude")
+    if float(ds["ts"].max()) > 200:
+        ds["ts"] = ds["ts"] - 273.15
+    if float(ds["sic"].max()) <= 1.1:
+        ds["sic"] = ds["sic"] * 100.0
+    ocean_mask = ds["calipso_lcc"].mean("time", skipna=True).notnull()
+    return ds.where(ocean_mask)
 
 
-def ols_regression_global(y, ts, eis, omega, sic, tadv):
-    """
-    Perform standardized multiple linear regression at one grid box.
+def deseasonalize(data: xr.DataArray) -> xr.DataArray:
+    return data.groupby("time.month") - data.groupby("time.month").mean("time", skipna=True)
 
-    Inputs are standardized monthly anomalies.
 
-    Returned coefficient order:
-        ts, eis, omega, sic, tadv
-    """
-    mask_core = (
-        ~np.isnan(y)
-        & ~np.isnan(ts)
-        & ~np.isnan(eis)
-        & ~np.isnan(omega)
-        & ~np.isnan(tadv)
-    )
+def standardize(data: xr.DataArray) -> xr.DataArray:
+    mean = data.mean("time", skipna=True)
+    std = data.std("time", skipna=True)
+    return ((data - mean) / std).where(std > 1e-6)
 
-    if np.sum(mask_core) < 20:
-        return np.array([np.nan] * 5)
 
-    y_c = y[mask_core]
-    ts_c = ts[mask_core]
-    eis_c = eis[mask_core]
-    omega_c = omega[mask_core]
-    sic_c = sic[mask_core]
-    tadv_c = tadv[mask_core]
-
-    sic_valid_mask = ~np.isnan(sic_c)
-    use_sic = False
-
-    if np.sum(sic_valid_mask) == len(y_c):
-        if np.std(sic_c) > 1e-4:
-            use_sic = True
-
+def regress_one_grid(y, predictors):
+    core = np.all(np.isfinite(predictors[:, [0, 1, 2, 4]]), axis=1) & np.isfinite(y)
+    if core.sum() < 20:
+        return np.full(5, np.nan)
+    yy = y[core]
+    xx = predictors[core]
+    use_sic = np.all(np.isfinite(xx[:, 3])) and np.nanstd(xx[:, 3]) > 1e-4
+    columns = [0, 1, 2, 3, 4] if use_sic else [0, 1, 2, 4]
     try:
-        if use_sic:
-            X = sm.add_constant(
-                np.column_stack((ts_c, eis_c, omega_c, sic_c, tadv_c)),
-                prepend=True,
-            )
-
-            params = sm.OLS(y_c, X).fit().params[1:]
-
-            return params
-
-        else:
-            X = sm.add_constant(
-                np.column_stack((ts_c, eis_c, omega_c, tadv_c)),
-                prepend=True,
-            )
-
-            params = sm.OLS(y_c, X).fit().params[1:]
-
-            return np.array([
-                params[0],     # ts
-                params[1],     # eis
-                params[2],     # omega
-                np.nan,        # sic
-                params[3],     # tadv
-            ])
-
+        design = sm.add_constant(xx[:, columns], prepend=True)
+        params = sm.OLS(yy, design).fit().params[1:]
     except Exception:
-        return np.array([np.nan] * 5)
+        return np.full(5, np.nan)
+    result = np.full(5, np.nan)
+    result[columns] = params
+    return result
 
 
-def run_global_regression(y, ts, eis, omega, sic, tadv):
-    """
-    Apply standardized multiple linear regression to all grid boxes.
-    """
-    return xr.apply_ufunc(
-        ols_regression_global,
-        y,
-        ts,
-        eis,
-        omega,
-        sic,
-        tadv,
-        input_core_dims=[
-            ["time"],
-            ["time"],
-            ["time"],
-            ["time"],
-            ["time"],
-            ["time"],
-        ],
-        output_core_dims=[["coefficient"]],
-        exclude_dims=set(("time",)),
-        vectorize=True,
-        dask="parallelized",
-        output_dtypes=[float],
-        output_sizes={"coefficient": 5},
+def global_coefficients(ds: xr.Dataset) -> tuple[xr.DataArray, xr.DataArray]:
+    anomalies = {name: standardize(deseasonalize(ds[name])) for name in ds.data_vars}
+    predictors = np.stack(
+        [anomalies[name].values for name in ["ts", "eis", "omega", "sic", "tadv"]],
+        axis=-1,
     )
+    nlat, nlon = ds.sizes["latitude"], ds.sizes["longitude"]
+
+    outputs = []
+    for sensor in ["calipso_lcc", "modis_lcc"]:
+        y = anomalies[sensor].values
+        beta = np.full((nlat, nlon, 5), np.nan)
+        for ilat in range(nlat):
+            for ilon in range(nlon):
+                beta[ilat, ilon, :] = regress_one_grid(y[:, ilat, ilon], predictors[:, ilat, ilon, :])
+        outputs.append(
+            xr.DataArray(
+                beta,
+                dims=("latitude", "longitude", "coefficient"),
+                coords={
+                    "latitude": ds.latitude,
+                    "longitude": ds.longitude,
+                    "coefficient": GLOBAL_COEFFICIENT_ORDER,
+                },
+            )
+        )
+    return outputs[0], outputs[1]
 
 
-def get_state_space_physical_sensitivities(group):
-    """
-    Perform non-standardized physical-unit regression within each Ts-EIS bin.
-
-    Returned sensitivities are for CALIPSO and MODIS LCC:
-        ts, eis, omega, tadv, sic
-
-    Units:
-        dLCC/dTs      : % / K
-        dLCC/dEIS     : % / K
-        dLCC/domega   : % / (hPa/day)
-        dLCC/dT_adv   : % / (K/day)
-        dLCC/dSIC     : % / %
-    """
-    empty_result = {
-        k: np.nan
-        for k in [
-            "cal_beta_ts",
-            "cal_beta_eis",
-            "cal_beta_omega",
-            "cal_beta_tadv",
-            "cal_beta_sic",
-            "mod_beta_ts",
-            "mod_beta_eis",
-            "mod_beta_omega",
-            "mod_beta_tadv",
-            "mod_beta_sic",
-        ]
-    }
-
-    if len(group) < min_data_points:
-        return pd.Series(empty_result)
-
-    group = group.copy()
-
-    # Determine whether SIC should be included in the regression.
-    # This avoids using SIC in bins where sea ice is almost always absent
-    # or almost always saturated.
-    sic_water_threshold = 1.0
-    sic_ice_threshold = 99.0
-    saturation_limit = 0.5
-
-    n_saturated = (
-        (group["sic_total"] <= sic_water_threshold)
-        | (group["sic_total"] >= sic_ice_threshold)
-    ).sum()
-
-    if (n_saturated / len(group) > saturation_limit) or (group["sic_anom"].std() < 0.1):
-        calc_sic = False
-    else:
-        calc_sic = True
-
-    # Unit conversion
-    # omega: Pa/s -> hPa/day
-    # 1 Pa/s = 86400 Pa/day = 864 hPa/day
-    group["omega_anom_hPa_day"] = group["omega_anom"] * 864.0
-
-    # Tadv: K/s -> K/day
-    group["tadv_anom_daily"] = group["tadv_anom"] * 86400.0
-
-    x_cols = [
-        "ts_anom",
-        "eis_anom",
-        "omega_anom_hPa_day",
-        "tadv_anom_daily",
-    ]
-
-    if calc_sic:
-        x_cols.append("sic_anom")
-
-    results = {}
-
-    def fit_model(y_col, prefix):
-        try:
-            reg_df = group[[y_col] + x_cols].dropna()
-
-            if len(reg_df) < min_data_points:
-                for var in ["ts", "eis", "omega", "tadv", "sic"]:
-                    results[f"{prefix}_beta_{var}"] = np.nan
-                return
-
-            X = sm.add_constant(reg_df[x_cols], prepend=True)
-            y = reg_df[y_col]
-
-            model = sm.OLS(y, X).fit()
-
-            results[f"{prefix}_beta_ts"] = model.params.get("ts_anom", np.nan)
-            results[f"{prefix}_beta_eis"] = model.params.get("eis_anom", np.nan)
-            results[f"{prefix}_beta_omega"] = model.params.get("omega_anom_hPa_day", np.nan)
-            results[f"{prefix}_beta_tadv"] = model.params.get("tadv_anom_daily", np.nan)
-
-            if calc_sic:
-                results[f"{prefix}_beta_sic"] = model.params.get("sic_anom", np.nan)
-            else:
-                results[f"{prefix}_beta_sic"] = np.nan
-
-        except Exception:
-            for var in ["ts", "eis", "omega", "tadv", "sic"]:
-                results[f"{prefix}_beta_{var}"] = np.nan
-
-    fit_model("cal_lcc_anom", "cal")
-    fit_model("mod_lcc_anom", "mod")
-
-    return pd.Series(results)
+def aggregate_to_10deg(ds: xr.Dataset) -> xr.Dataset:
+    # Native spacing is 2° latitude x 5° longitude; 5 x 2 cells = 10° x 10°.
+    return ds.coarsen(latitude=5, longitude=2, boundary="trim").mean(skipna=True)
 
 
-def plot_global_map(ax, data, title, panel_label):
-    """
-    Plot a global map of standardized regression coefficients.
-    Panel labels are placed before titles.
-    """
-    ax.set_global()
+def fit_state_bin(frame: pd.DataFrame, sensor: str, use_sic: bool):
+    x_names = ["ts_anom", "eis_anom", "omega_hpa_day", "tadv_k_day"]
+    if use_sic:
+        x_names.append("sic_anom")
+    regression = frame[[sensor] + x_names].dropna()
+    if len(regression) < MIN_STATE_SAMPLES:
+        return np.full(5, np.nan), np.full(5, np.nan)
+    model = sm.OLS(regression[sensor], sm.add_constant(regression[x_names], prepend=True)).fit()
+    result = np.full(5, np.nan)
+    p_values = np.full(5, np.nan)
+    result[0] = model.params.get("ts_anom", np.nan)
+    result[1] = model.params.get("eis_anom", np.nan)
+    result[2] = model.params.get("omega_hpa_day", np.nan)
+    result[3] = model.params.get("tadv_k_day", np.nan)
+    p_values[0] = model.pvalues.get("ts_anom", np.nan)
+    p_values[1] = model.pvalues.get("eis_anom", np.nan)
+    p_values[2] = model.pvalues.get("omega_hpa_day", np.nan)
+    p_values[3] = model.pvalues.get("tadv_k_day", np.nan)
+    if use_sic:
+        result[4] = model.params.get("sic_anom", np.nan)
+        p_values[4] = model.pvalues.get("sic_anom", np.nan)
+    return result, p_values
 
-    data_values = data.values
 
-    if "longitude" in data.coords:
-        lons = data["longitude"].values
-    else:
-        lons = data["lon"].values
+def state_space_coefficients(ds: xr.Dataset):
+    anomalies = {name: deseasonalize(ds[name]) for name in ds.data_vars}
+    frame = pd.DataFrame(
+        {
+            "ts_total": ds["ts"].values.ravel(),
+            "eis_total": ds["eis"].values.ravel(),
+            "sic_total": ds["sic"].values.ravel(),
+            "cal": (anomalies["calipso_lcc"].values * 100.0).ravel(),
+            "mod": (anomalies["modis_lcc"].values * 100.0).ravel(),
+            "ts_anom": anomalies["ts"].values.ravel(),
+            "eis_anom": anomalies["eis"].values.ravel(),
+            "omega_hpa_day": (anomalies["omega"].values * 864.0).ravel(),
+            "sic_anom": anomalies["sic"].values.ravel(),
+            "tadv_k_day": (anomalies["tadv"].values * 86400.0).ravel(),
+        }
+    )
+    required = ["ts_total", "eis_total", "sic_total", "cal", "mod", "ts_anom", "eis_anom", "omega_hpa_day", "tadv_k_day"]
+    frame = frame.dropna(subset=required)
 
-    if "latitude" in data.coords:
-        lats = data["latitude"].values
-    else:
-        lats = data["lat"].values
+    ts_edges = np.arange(-31, 32, 2)
+    eis_edges = np.arange(-5, 26, 2)
+    ts_centers = (ts_edges[:-1] + ts_edges[1:]) / 2
+    eis_centers = (eis_edges[:-1] + eis_edges[1:]) / 2
+    frame["ts_bin"] = pd.cut(frame.ts_total, ts_edges, labels=False, right=False)
+    frame["eis_bin"] = pd.cut(frame.eis_total, eis_edges, labels=False, right=False)
+    frame = frame.dropna(subset=["ts_bin", "eis_bin"])
+    frame[["ts_bin", "eis_bin"]] = frame[["ts_bin", "eis_bin"]].astype(int)
 
-    data_cyclic, lons_cyclic = add_cyclic_point(data_values, coord=lons)
+    cal = np.full((5, len(eis_centers), len(ts_centers)), np.nan)
+    mod = np.full_like(cal, np.nan)
+    cal_p = np.full_like(cal, np.nan)
+    mod_p = np.full_like(cal, np.nan)
+    for (ieis, its), group in frame.groupby(["eis_bin", "ts_bin"], sort=False):
+        if len(group) < MIN_STATE_SAMPLES:
+            continue
+        saturated = ((group.sic_total <= 1.0) | (group.sic_total >= 99.0)).sum() / len(group)
+        use_sic = saturated <= 0.5 and group.sic_anom.std() >= 0.1
+        cal[:, ieis, its], cal_p[:, ieis, its] = fit_state_bin(group, "cal", use_sic)
+        mod[:, ieis, its], mod_p[:, ieis, its] = fit_state_bin(group, "mod", use_sic)
+    return cal, mod, cal_p, mod_p, ts_edges, eis_edges
 
-    mappable = ax.pcolormesh(
-        compute_edges(lons_cyclic),
-        compute_edges(lats),
-        data_cyclic,
+
+def coordinate_edges(centers):
+    centers = np.asarray(centers, dtype=float)
+    delta = np.diff(centers).mean()
+    return np.concatenate(([centers[0] - delta / 2], centers + delta / 2))
+
+
+def map_panel(ax, data: xr.DataArray, title: str, panel: str, vmin=-1.0, vmax=1.0, cmap="RdBu_r"):
+    cyclic, cyclic_lon = add_cyclic_point(data.values, coord=data.longitude.values)
+    mesh = ax.pcolormesh(
+        coordinate_edges(cyclic_lon),
+        coordinate_edges(data.latitude.values),
+        cyclic,
         transform=ccrs.PlateCarree(),
         cmap=cmap,
-        vmin=global_vmin,
-        vmax=global_vmax,
+        vmin=vmin,
+        vmax=vmax,
         shading="flat",
-        zorder=1,
     )
-
-    ax.add_feature(cfeature.LAND, facecolor="silver", edgecolor="none", zorder=2)
-    ax.coastlines(linewidth=0.75, color="black", zorder=3)
-
-    ax.gridlines(
-        draw_labels=False,
-        linewidth=0.45,
-        color="gray",
-        alpha=0.55,
-        linestyle="--",
-        zorder=3,
-    )
-
-    ax.set_title(
-        f"{panel_label} {title}",
-        fontsize=title_fontsize,
-        fontweight=font_weight,
-        fontfamily="Times New Roman",
-        pad=5,
-    )
-
+    ax.add_feature(cfeature.LAND, facecolor="0.72", edgecolor="none", zorder=3)
+    ax.coastlines(linewidth=0.55, zorder=4)
+    ax.gridlines(draw_labels=False, linewidth=0.45, color="gray", alpha=0.55, linestyle="--", zorder=4)
+    ax.set_global()
+    # Preserve the taller map-panel geometry used by the original Figure 3.
     ax.set_aspect(1.5)
-
-    return mappable
-
-
-def plot_state_space(ax, data, title, panel_label, ts_bins, eis_bins, vlim):
-    """
-    Plot a Ts-EIS state-space map of physical sensitivities.
-    Panel labels are placed before titles.
-    """
-    mesh = ax.pcolormesh(
-        ts_bins,
-        eis_bins,
-        data.values,
-        cmap=cmap,
-        vmin=-vlim,
-        vmax=vlim,
-        shading="auto",
-    )
-
-    ax.set_title(
-        f"{panel_label} {title}",
-        fontsize=title_fontsize,
-        fontweight=font_weight,
-        fontfamily="Times New Roman",
-        pad=5,
-    )
-
-    ax.set_xlim(-30, 30)
-    ax.set_ylim(-5, 25)
-
-    ax.xaxis.set_major_locator(MultipleLocator(10))
-    ax.yaxis.set_major_locator(MultipleLocator(5))
-
-    ax.grid(True, linestyle="--", alpha=0.35, color="black")
-
-    ax.tick_params(labelsize=tick_fontsize, width=1.8, length=6)
-
-    for t in ax.get_xticklabels() + ax.get_yticklabels():
-        t.set_fontweight(font_weight)
-        t.set_fontfamily("Times New Roman")
-
-    ax.set_box_aspect(0.82)
-
+    ax.set_title(f"{panel} {title}", fontsize=10.5, fontweight="bold", pad=3)
     return mesh
 
 
-# ==========================================================
-# 4. Data loading and preprocessing
-# ==========================================================
-print(f"[Log] Loading file: {file_path}")
+def state_panel(ax, values, ts_edges, eis_edges, title, panel, limit, p_values=None):
+    mesh = ax.pcolormesh(ts_edges, eis_edges, values, cmap="RdBu_r", vmin=-limit, vmax=limit, shading="flat")
+    ax.set_xlim(-30, 30)
+    ax.set_ylim(-5, 25)
+    ax.xaxis.set_major_locator(MultipleLocator(10))
+    ax.yaxis.set_major_locator(MultipleLocator(5))
+    ax.tick_params(labelsize=23, width=1.8, length=6)
+    for label in ax.get_xticklabels() + ax.get_yticklabels():
+        label.set_fontweight("bold")
+        label.set_fontfamily("Times New Roman")
+    ax.grid(linestyle="--", linewidth=0.4, alpha=0.35)
+    if p_values is not None:
+        significant = np.where((p_values < 0.05) & np.isfinite(values))
+        ts_centers = (ts_edges[:-1] + ts_edges[1:]) / 2
+        eis_centers = (eis_edges[:-1] + eis_edges[1:]) / 2
+        ax.scatter(ts_centers[significant[1]], eis_centers[significant[0]], s=10, c="black", marker=".", zorder=3)
+    ax.set_title(f"{panel} {title}", fontsize=10.5, fontweight="bold", pad=3)
+    return mesh
 
-try:
-    with xr.open_dataset(file_path) as ds_input:
 
-        required_vars = [
-            "calipso_lcc",
-            "modis_lcc",
-            "ts",
-            "eis",
-            "sic",
-            "tadv",
-        ]
-
-        for v in required_vars:
-            if v not in ds_input:
-                raise ValueError(f"Missing variable in input file: {v}")
-
-        # Identify omega variable
-        if "omega" in ds_input:
-            omega_name = "omega"
-            ds = ds_input[
-                [
-                    "calipso_lcc",
-                    "modis_lcc",
-                    "ts",
-                    "eis",
-                    "sic",
-                    "tadv",
-                    omega_name,
-                ]
-            ].load()
-
-        elif "omega700" in ds_input:
-            omega_name = "omega700"
-            ds = ds_input[
-                [
-                    "calipso_lcc",
-                    "modis_lcc",
-                    "ts",
-                    "eis",
-                    "sic",
-                    "tadv",
-                    omega_name,
-                ]
-            ].load()
-
-        else:
-            print("[Log] No omega/omega700 in unified file. Loading omega700 from merged file.")
-
-            with xr.open_dataset(file_path_omega) as ds_omega:
-                if "omega700" not in ds_omega:
-                    raise ValueError("omega700 is also missing in the merged file.")
-
-                ds_main = ds_input[
-                    [
-                        "calipso_lcc",
-                        "modis_lcc",
-                        "ts",
-                        "eis",
-                        "sic",
-                        "tadv",
-                    ]
-                ]
-
-                ds_omg = ds_omega[["omega700"]]
-
-                ds_main, ds_omg = xr.align(ds_main, ds_omg, join="inner")
-                ds = xr.merge([ds_main, ds_omg]).load()
-
-                omega_name = "omega700"
-
-        # Ocean / valid-area mask
-        ocean_mask = ds["calipso_lcc"].mean(dim="time").notnull()
-        ds_ocean = ds.where(ocean_mask)
-
-        # Unit harmonization
-        if float(ds_ocean["ts"].max()) > 200:
-            ds_ocean["ts"] = ds_ocean["ts"] - 273.15
-
-        if float(ds_ocean["sic"].max()) <= 1.1:
-            ds_ocean["sic"] = ds_ocean["sic"] * 100.0
-
-        # ==================================================
-        # 5. Global standardized regression
-        # ==================================================
-        print("[Log] Calculating global standardized regression coefficients...")
-
-        ds_stand = xr.Dataset()
-
-        for var in [
-            "calipso_lcc",
-            "modis_lcc",
-            "ts",
-            "eis",
-            omega_name,
-            "sic",
-            "tadv",
-        ]:
-            ds_stand[var] = standardize_robust_xarray(
-                deseasonalize_robust(ds_ocean[var])
-            )
-
-        coeff_names = [
-            "ts",
-            "eis",
-            "omega",
-            "sic",
-            "tadv",
-        ]
-
-        coeffs_cal = run_global_regression(
-            ds_stand["calipso_lcc"],
-            ds_stand["ts"],
-            ds_stand["eis"],
-            ds_stand[omega_name],
-            ds_stand["sic"],
-            ds_stand["tadv"],
-        ).assign_coords(coefficient=coeff_names)
-
-        coeffs_mod = run_global_regression(
-            ds_stand["modis_lcc"],
-            ds_stand["ts"],
-            ds_stand["eis"],
-            ds_stand[omega_name],
-            ds_stand["sic"],
-            ds_stand["tadv"],
-        ).assign_coords(coefficient=coeff_names)
-
-        # ==================================================
-        # 6. Ts-EIS state-space physical-unit regression
-        # ==================================================
-        print("[Log] Calculating Ts-EIS state-space physical sensitivities...")
-
-        ds_anom = xr.Dataset()
-
-        for var in [
-            "calipso_lcc",
-            "modis_lcc",
-            "ts",
-            "eis",
-            omega_name,
-            "sic",
-            "tadv",
-        ]:
-            ds_anom[var] = deseasonalize_robust(ds_ocean[var])
-
-        ds_final = xr.Dataset()
-
-        ds_final["ts_total"] = ds_ocean["ts"]
-        ds_final["eis_total"] = ds_ocean["eis"]
-        ds_final["sic_total"] = ds_ocean["sic"]
-
-        ds_final["cal_lcc_anom"] = ds_anom["calipso_lcc"] * 100.0
-        ds_final["mod_lcc_anom"] = ds_anom["modis_lcc"] * 100.0
-
-        ds_final["ts_anom"] = ds_anom["ts"]
-        ds_final["eis_anom"] = ds_anom["eis"]
-        ds_final["omega_anom"] = ds_anom[omega_name]
-        ds_final["sic_anom"] = ds_anom["sic"]
-        ds_final["tadv_anom"] = ds_anom["tadv"]
-
-        print("[Log] Converting state-space data to DataFrame...")
-
-        df_main = ds_final.stack(
-            point=("time", "latitude", "longitude")
-        ).to_dataframe()
-
-        df_main.dropna(
-            subset=[
-                "cal_lcc_anom",
-                "mod_lcc_anom",
-                "ts_total",
-                "eis_total",
-                "sic_total",
-                "ts_anom",
-                "eis_anom",
-                "omega_anom",
-                "tadv_anom",
-            ],
-            inplace=True,
-        )
-
-        print(f"[Log] Valid samples for state-space regression: {len(df_main)}")
-
-        ts_bins = np.arange(-31, 32, 2)
-        eis_bins = np.arange(-5, 26, 2)
-
-        ts_centers = (ts_bins[:-1] + ts_bins[1:]) / 2
-        eis_centers = (eis_bins[:-1] + eis_bins[1:]) / 2
-
-        df_main["ts_bin"] = pd.cut(
-            df_main["ts_total"],
-            bins=ts_bins,
-            labels=ts_centers,
-            right=False,
-        )
-
-        df_main["eis_bin"] = pd.cut(
-            df_main["eis_total"],
-            bins=eis_bins,
-            labels=eis_centers,
-            right=False,
-        )
-
-        print("[Log] Running grouped physical-unit regression...")
-
-        sensitivity = (
-            df_main.groupby(["eis_bin", "ts_bin"], observed=False)
-            .apply(get_state_space_physical_sensitivities, include_groups=False)
-        )
-
-        grids = {}
-
-        for metric in [
-            "ts",
-            "eis",
-            "omega",
-            "tadv",
-            "sic",
-        ]:
-            grids[f"cal_{metric}"] = sensitivity[f"cal_beta_{metric}"].unstack()
-            grids[f"mod_{metric}"] = sensitivity[f"mod_beta_{metric}"].unstack()
-
-        # ==================================================
-        # 7. Export state-space physical-sensitivity CSV
-        # ==================================================
-        print("[Log] Exporting state-space physical-sensitivity CSV...")
-
-        df_csv = pd.DataFrame({
-            "CALIPSO_partial_LCC_partial_Ts_percent_per_K": grids["cal_ts"].stack(dropna=False),
-            "MODIS_partial_LCC_partial_Ts_percent_per_K": grids["mod_ts"].stack(dropna=False),
-
-            "CALIPSO_partial_LCC_partial_EIS_percent_per_K": grids["cal_eis"].stack(dropna=False),
-            "MODIS_partial_LCC_partial_EIS_percent_per_K": grids["mod_eis"].stack(dropna=False),
-
-            "CALIPSO_partial_LCC_partial_omega_percent_per_hPa_day": grids["cal_omega"].stack(dropna=False),
-            "MODIS_partial_LCC_partial_omega_percent_per_hPa_day": grids["mod_omega"].stack(dropna=False),
-
-            "CALIPSO_partial_LCC_partial_Tadv_percent_per_K_day": grids["cal_tadv"].stack(dropna=False),
-            "MODIS_partial_LCC_partial_Tadv_percent_per_K_day": grids["mod_tadv"].stack(dropna=False),
-
-            "CALIPSO_partial_LCC_partial_SIC_percent_per_percent": grids["cal_sic"].stack(dropna=False),
-            "MODIS_partial_LCC_partial_SIC_percent_per_percent": grids["mod_sic"].stack(dropna=False),
-        }).reset_index()
-
-        df_csv.rename(
-            columns={
-                "eis_bin": "EIS_Center",
-                "ts_bin": "Ts_Center",
-            },
-            inplace=True,
-        )
-
-        csv_save_path = os.path.join(output_dir, csv_filename)
-        df_csv.to_csv(csv_save_path, index=False, float_format="%.4f")
-
-        print(f"[Success] CSV saved to: {csv_save_path}")
-
-    # ======================================================
-    # 8. Plotting: 5 rows × 4 columns
-    # ======================================================
-    print("[Log] Plotting combined 5-variable figure...")
-
-    proj = ccrs.Robinson(central_longitude=180)
-
+def plot_full_figure(cal10, mod10, state_cal, state_mod, state_cal_p, state_mod_p, ts_edges, eis_edges, output_stem):
+    projection = ccrs.Robinson(central_longitude=180)
+    plt.rcParams.update({"font.family": "Times New Roman", "font.weight": "bold", "axes.labelweight": "bold", "axes.titleweight": "bold"})
     fig = plt.figure(figsize=(31.5, 30.8))
-
-    outer_gs = fig.add_gridspec(
-        nrows=1,
-        ncols=2,
-        left=0.035,
-        right=0.905,
-        bottom=0.070,
-        top=0.965,
-        width_ratios=[1.06, 1.00],
-        wspace=0.16,
-    )
-
-    left_gs = outer_gs[0, 0].subgridspec(
-        nrows=5,
-        ncols=2,
-        wspace=0.10,
-        hspace=0.19,
-    )
-
-    right_gs = outer_gs[0, 1].subgridspec(
-        nrows=5,
-        ncols=2,
-        wspace=0.12,
-        hspace=0.19,
-    )
-
-    axes = np.empty((5, 4), dtype=object)
-
-    for r in range(5):
-        axes[r, 0] = fig.add_subplot(left_gs[r, 0], projection=proj)
-        axes[r, 1] = fig.add_subplot(left_gs[r, 1], projection=proj)
-
-        axes[r, 2] = fig.add_subplot(right_gs[r, 0])
-        axes[r, 3] = fig.add_subplot(right_gs[r, 1])
-
-    variables = [
-        {"key": "ts", "title": "∂LCC/∂Ts"},
-        {"key": "eis", "title": "∂LCC/∂EIS"},
-        {"key": "omega", "title": "∂LCC/∂ω"},
-        {"key": "tadv", "title": r"$\mathrm{\partial LCC/\partial T_{adv}}$"},
-        {"key": "sic", "title": "∂LCC/∂SIC"},
-    ]
-
-    panel_labels = [
-        "(a)", "(b)", "(c)", "(d)",
-        "(e)", "(f)", "(g)", "(h)",
-        "(i)", "(j)", "(k)", "(l)",
-        "(m)", "(n)", "(o)", "(p)",
-        "(q)", "(r)", "(s)", "(t)",
-    ]
-
-    panel_idx = 0
-
+    outer = fig.add_gridspec(1, 2, left=0.035, right=0.905, bottom=0.070, top=0.965, width_ratios=[1.06, 1.00], wspace=0.16)
+    left = outer[0, 0].subgridspec(5, 2, wspace=0.10, hspace=0.19)
+    right = outer[0, 1].subgridspec(5, 2, wspace=0.12, hspace=0.19)
+    labels = [f"({chr(97 + i)})" for i in range(20)]
     global_mesh = None
-    state_meshes = {}
-
-    for r, var_info in enumerate(variables):
-        key = var_info["key"]
-        title = var_info["title"]
-
-        global_mesh = plot_global_map(
-            axes[r, 0],
-            coeffs_cal.sel(coefficient=key),
-            f"CALIPSO Global {title}",
-            panel_labels[panel_idx],
-        )
-        panel_idx += 1
-
-        global_mesh = plot_global_map(
-            axes[r, 1],
-            coeffs_mod.sel(coefficient=key),
-            f"MODIS Global {title}",
-            panel_labels[panel_idx],
-        )
-        panel_idx += 1
-
-        state_mesh_cal = plot_state_space(
-            axes[r, 2],
-            grids[f"cal_{key}"],
-            f"CALIPSO State-space {title}",
-            panel_labels[panel_idx],
-            ts_bins,
-            eis_bins,
-            state_vlims[key],
-        )
-        panel_idx += 1
-
-        state_mesh_mod = plot_state_space(
-            axes[r, 3],
-            grids[f"mod_{key}"],
-            f"MODIS State-space {title}",
-            panel_labels[panel_idx],
-            ts_bins,
-            eis_bins,
-            state_vlims[key],
-        )
-        panel_idx += 1
-
-        state_meshes[key] = state_mesh_mod
-
-    # ======================================================
-    # 9. Axis labels
-    # ======================================================
-    for r in range(5):
-        for c in range(4):
-
-            if c < 2:
-                continue
-
-            if c == 2:
-                axes[r, c].set_ylabel(
-                    "EIS (K)",
-                    fontsize=label_fontsize,
-                    fontweight=font_weight,
-                    fontfamily="Times New Roman",
-                    labelpad=5,
-                )
-            else:
-                axes[r, c].set_ylabel("")
-
-            if r == 4:
-                axes[r, c].set_xlabel(
-                    "Ts (°C)",
-                    fontsize=label_fontsize,
-                    fontweight=font_weight,
-                    fontfamily="Times New Roman",
-                    labelpad=5,
-                )
-            else:
-                axes[r, c].set_xlabel("")
-
-    # ======================================================
-    # 10. Colorbars
-    # ======================================================
-
-    # ------------------------------------------------------
-    # 10.1 Shared colorbar for global maps, columns 1-2
-    # ------------------------------------------------------
-    pos_left0 = axes[4, 0].get_position()
-    pos_left1 = axes[4, 1].get_position()
-
-    cbar_ax_global = fig.add_axes([
-        pos_left0.x0 + 0.015,
-        0.032,
-        pos_left1.x1 - pos_left0.x0 - 0.030,
-        0.018,
-    ])
-
-    cb_global = fig.colorbar(
-        global_mesh,
-        cax=cbar_ax_global,
-        orientation="horizontal",
-        extend="both",
-        ticks=np.arange(-1.0, 1.01, 0.5),
-    )
-
-    cb_global.set_label(
-        "Global standardized coefficient",
-        fontsize=cbar_label_fontsize,
-        fontweight=font_weight,
-        fontfamily="Times New Roman",
-        labelpad=7,
-    )
-
-    cb_global.ax.tick_params(labelsize=cbar_tick_fontsize, width=1.8, length=6)
-
-    for t in cb_global.ax.get_xticklabels():
-        t.set_fontweight(font_weight)
-        t.set_fontfamily("Times New Roman")
-
-    # ------------------------------------------------------
-    # 10.2 One state-space colorbar for each row, columns 3-4
-    # ------------------------------------------------------
-    for r, key in enumerate(["ts", "eis", "omega", "tadv", "sic"]):
-
-        pos = axes[r, 3].get_position()
-
+    axes = np.empty((5, 4), dtype=object)
+    state_meshes = []
+    for row, key in enumerate(VARIABLES):
+        ax0 = fig.add_subplot(left[row, 0], projection=projection)
+        ax1 = fig.add_subplot(left[row, 1], projection=projection)
+        ax2 = fig.add_subplot(right[row, 0])
+        ax3 = fig.add_subplot(right[row, 1])
+        axes[row] = [ax0, ax1, ax2, ax3]
+        title = COEFFICIENT_LABELS[key]
+        global_mesh = map_panel(ax0, cal10.sel(coefficient=key), f"CALIPSO Global {title}", labels[row * 4])
+        global_mesh = map_panel(ax1, mod10.sel(coefficient=key), f"MODIS Global {title}", labels[row * 4 + 1])
+        state_mesh = state_panel(ax2, state_cal[row], ts_edges, eis_edges, f"CALIPSO State-space {title}", labels[row * 4 + 2], STATE_LIMITS[key], p_values=state_cal_p[row])
+        state_mesh = state_panel(ax3, state_mod[row], ts_edges, eis_edges, f"MODIS State-space {title}", labels[row * 4 + 3], STATE_LIMITS[key], p_values=state_mod_p[row])
+        for axis in (ax0, ax1, ax2, ax3):
+            axis.title.set_fontsize(25)
+            axis.title.set_fontweight("bold")
+            axis.title.set_fontfamily("Times New Roman")
+        ax2.set_ylabel("EIS (K)", fontsize=26, fontweight="bold", fontfamily="Times New Roman", labelpad=5)
+        if row == 4:
+            ax2.set_xlabel(r"$T_s$ (°C)", fontsize=9, fontweight="bold")
+            ax3.set_xlabel(r"$T_s$ (°C)", fontsize=9, fontweight="bold")
+        pos = ax3.get_position()
         cbar_height = pos.height * 0.82
-        cbar_bottom = pos.y0 + (pos.height - cbar_height) / 2
-
-        cbar_ax = fig.add_axes([
-            pos.x1 + 0.008,
-            cbar_bottom,
-            0.012,
-            cbar_height,
-        ])
-
-        ticks = [-state_vlims[key], 0, state_vlims[key]]
-
-        cb = fig.colorbar(
-            state_meshes[key],
-            cax=cbar_ax,
-            orientation="vertical",
+        cax = fig.add_axes([pos.x1 + 0.008, pos.y0 + (pos.height - cbar_height) / 2, 0.012, cbar_height])
+        cbar = fig.colorbar(
+            state_mesh,
+            cax=cax,
             extend="both",
-            ticks=ticks,
+            ticks=np.linspace(-STATE_LIMITS[key], STATE_LIMITS[key], 5),
         )
+        cbar.set_label(STATE_UNITS[key], fontsize=23, fontweight="bold", fontfamily="Times New Roman", labelpad=6)
+        cbar.ax.tick_params(labelsize=25, width=1.6, length=5)
+        for label in cbar.ax.get_yticklabels():
+            label.set_fontweight("bold")
+            label.set_fontfamily("Times New Roman")
+        state_meshes.append(state_mesh)
+        if row == 4:
+            ax2.set_xlabel("Ts (°C)", fontsize=26, fontweight="bold", fontfamily="Times New Roman", labelpad=5)
+            ax3.set_xlabel("Ts (°C)", fontsize=26, fontweight="bold", fontfamily="Times New Roman", labelpad=5)
+    pos0, pos1 = axes[4, 0].get_position(), axes[4, 1].get_position()
+    cax = fig.add_axes([pos0.x0 + 0.015, 0.032, pos1.x1 - pos0.x0 - 0.030, 0.018])
+    cbar = fig.colorbar(global_mesh, cax=cax, orientation="horizontal", extend="both", ticks=np.arange(-1.0, 1.01, 0.5))
+    cbar.set_label("Global standardized coefficient", fontsize=25, fontweight="bold", fontfamily="Times New Roman")
+    cbar.ax.tick_params(labelsize=25, width=1.8, length=6)
+    for label in cbar.ax.get_xticklabels():
+        label.set_fontweight("bold")
+        label.set_fontfamily("Times New Roman")
+    fig.savefig(OUTPUT_DIR / f"{output_stem}.png", dpi=300, bbox_inches="tight", facecolor="white")
+    fig.savefig(OUTPUT_DIR / f"{output_stem}.pdf", bbox_inches="tight", facecolor="white")
+    plt.close(fig)
 
-        cb.set_label(
-            state_units[key],
-            fontsize=cbar_label_fontsize - 2,
-            fontweight=font_weight,
-            fontfamily="Times New Roman",
-            labelpad=6,
-        )
 
-        cb.ax.tick_params(labelsize=cbar_tick_fontsize, width=1.6, length=5)
+def plot_comparison(cal2, mod2, cal10, mod10):
+    projection = ccrs.Robinson(central_longitude=180)
+    fig = plt.figure(figsize=(16, 13))
+    grid = fig.add_gridspec(5, 4, left=0.06, right=0.985, bottom=0.08, top=0.94, wspace=0.08, hspace=0.17)
+    coefficient_axes = []
+    coefficient_mesh = None
+    for row, key in enumerate(VARIABLES):
+        datasets = [
+            cal2.sel(coefficient=key),
+            cal10.sel(coefficient=key),
+            mod2.sel(coefficient=key),
+            mod10.sel(coefficient=key),
+        ]
+        titles = [
+            "CALIPSO 2°×5° regression", "CALIPSO 10°×10° regression",
+            "MODIS 2°×5° regression", "MODIS 10°×10° regression",
+        ]
+        for col, (data, title) in enumerate(zip(datasets, titles)):
+            ax = fig.add_subplot(grid[row, col], projection=projection)
+            mesh = map_panel(ax, data, "", "", -1.0, 1.0)
+            ax.set_title(title if row == 0 else "", fontsize=9.5, fontweight="bold", pad=4)
+            if col == 0:
+                ax.text(-0.08, 0.5, COEFFICIENT_LABELS[key], transform=ax.transAxes, rotation=90,
+                        ha="center", va="center", fontsize=10, fontweight="bold")
+            coefficient_axes.append(ax)
+            coefficient_mesh = mesh
+    cbar = fig.colorbar(coefficient_mesh, ax=coefficient_axes, orientation="horizontal", fraction=0.025, pad=0.025, extend="both")
+    cbar.set_label("Standardized partial regression coefficient", fontweight="bold")
+    fig.suptitle("Global regressions: native 2°×5° data vs. monthly fields aggregated to 10°×10° before regression", fontsize=13, fontweight="bold", y=0.985)
+    fig.savefig(OUTPUT_DIR / "Figure3_2x5_vs_10x10_global_comparison.png", dpi=300, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
 
-        for t in cb.ax.get_yticklabels():
-            t.set_fontweight(font_weight)
-            t.set_fontfamily("Times New Roman")
 
-    # ======================================================
-    # 11. Save figure
-    # ======================================================
-    save_path = os.path.join(output_dir, output_filename)
+def plot_global_comparison_with_difference(cal2, mod2, cal10, mod10):
+    """Add common-grid differences without relabeling them as native results."""
+    projection = ccrs.Robinson(central_longitude=180)
+    fig = plt.figure(figsize=(22, 13))
+    grid = fig.add_gridspec(5, 6, left=0.045, right=0.985, bottom=0.10, top=0.93, wspace=0.08, hspace=0.17)
+    coefficient_axes = []
+    difference_axes = []
+    coefficient_mesh = None
+    difference_mesh = None
+    cal2_block = cal2.coarsen(latitude=5, longitude=2, boundary="trim").mean(skipna=True)
+    mod2_block = mod2.coarsen(latitude=5, longitude=2, boundary="trim").mean(skipna=True)
+    for row, key in enumerate(VARIABLES):
+        datasets = [
+            cal2.sel(coefficient=key),
+            cal10.sel(coefficient=key),
+            cal10.sel(coefficient=key) - cal2_block.sel(coefficient=key),
+            mod2.sel(coefficient=key),
+            mod10.sel(coefficient=key),
+            mod10.sel(coefficient=key) - mod2_block.sel(coefficient=key),
+        ]
+        titles = [
+            "CALIPSO 2°×5° regression", "CALIPSO 10°×10° regression", "CALIPSO difference",
+            "MODIS 2°×5° regression", "MODIS 10°×10° regression", "MODIS difference",
+        ]
+        for col, (data, title) in enumerate(zip(datasets, titles)):
+            ax = fig.add_subplot(grid[row, col], projection=projection)
+            is_difference = col in (2, 5)
+            limit = 0.5 if is_difference else 1.0
+            mesh = map_panel(ax, data, "", "", -limit, limit)
+            ax.set_title(title if row == 0 else "", fontsize=9.2, fontweight="bold", pad=4)
+            if col == 0:
+                ax.text(-0.08, 0.5, COEFFICIENT_LABELS[key], transform=ax.transAxes, rotation=90,
+                        ha="center", va="center", fontsize=10, fontweight="bold")
+            if is_difference:
+                difference_axes.append(ax)
+                difference_mesh = mesh
+            else:
+                coefficient_axes.append(ax)
+                coefficient_mesh = mesh
+    cbar1 = fig.colorbar(coefficient_mesh, ax=coefficient_axes, orientation="horizontal", fraction=0.022, pad=0.025, extend="both")
+    cbar1.set_label("Standardized partial regression coefficient", fontweight="bold")
+    cbar2 = fig.colorbar(difference_mesh, ax=difference_axes, orientation="horizontal", fraction=0.022, pad=0.025, extend="both")
+    cbar2.set_label("Difference: 10°×10° regression minus mean 2°×5° coefficient in the same block", fontweight="bold")
+    fig.suptitle("Resolution sensitivity of global regressions", fontsize=14, fontweight="bold", y=0.985)
+    fig.savefig(OUTPUT_DIR / "Figure3_2x5_vs_10x10_global_comparison_with_difference.png", dpi=300, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
 
-    plt.savefig(save_path, dpi=300, bbox_inches="tight")
-    print(f"[Success] Combined 5-variable figure saved to: {save_path}")
 
-    plt.show()
+def plot_state_comparison(state_cal2, state_mod2, state_cal10, state_mod10, ts_edges, eis_edges):
+    fig, axes = plt.subplots(5, 4, figsize=(15, 16), constrained_layout=True)
+    titles = [
+        "CALIPSO 2°×5° samples", "CALIPSO 10°×10° samples",
+        "MODIS 2°×5° samples", "MODIS 10°×10° samples",
+    ]
+    for row, key in enumerate(VARIABLES):
+        fields = [state_cal2[row], state_cal10[row], state_mod2[row], state_mod10[row]]
+        row_mesh = None
+        for col, (field, title) in enumerate(zip(fields, titles)):
+            row_mesh = state_panel(
+                axes[row, col], field, ts_edges, eis_edges,
+                title if row == 0 else "", "", STATE_LIMITS[key]
+            )
+            if col == 0:
+                axes[row, col].set_ylabel(f"{COEFFICIENT_LABELS[key]}\nEIS (K)", fontsize=9, fontweight="bold")
+            if row == 4:
+                axes[row, col].set_xlabel(r"$T_s$ (°C)", fontsize=9, fontweight="bold")
+        cbar = fig.colorbar(row_mesh, ax=axes[row, :], fraction=0.018, pad=0.01, extend="both")
+        cbar.set_label(STATE_UNITS[key], fontsize=8.5, fontweight="bold")
+    fig.suptitle("Ts–EIS-bin regressions after changing only the spatial grid", fontsize=14, fontweight="bold")
+    fig.savefig(OUTPUT_DIR / "Figure3_2x5_vs_10x10_state_space_comparison.png", dpi=300, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
 
-except Exception as e:
-    print(f"[Error] {e}")
-    traceback.print_exc()
+
+def plot_state_differences(state_cal2, state_mod2, state_cal10, state_mod10, ts_edges, eis_edges):
+    fig, axes = plt.subplots(5, 2, figsize=(8.5, 16), constrained_layout=True)
+    for row, key in enumerate(VARIABLES):
+        fields = [state_cal10[row] - state_cal2[row], state_mod10[row] - state_mod2[row]]
+        row_mesh = None
+        for col, (field, sensor) in enumerate(zip(fields, ["CALIPSO", "MODIS"])):
+            row_mesh = state_panel(
+                axes[row, col], field, ts_edges, eis_edges,
+                f"{sensor} difference" if row == 0 else "", "", STATE_LIMITS[key]
+            )
+            if col == 0:
+                axes[row, col].set_ylabel(f"{COEFFICIENT_LABELS[key]}\nEIS (K)", fontsize=9, fontweight="bold")
+            if row == 4:
+                axes[row, col].set_xlabel(r"$T_s$ (°C)", fontsize=9, fontweight="bold")
+        cbar = fig.colorbar(row_mesh, ax=axes[row, :], fraction=0.025, pad=0.015, extend="both")
+        cbar.set_label(STATE_UNITS[key], fontsize=8.5, fontweight="bold")
+    fig.suptitle("State-space difference: 10°×10°-sample regression minus 2°×5°-sample regression", fontsize=12, fontweight="bold")
+    fig.savefig(OUTPUT_DIR / "Figure3_2x5_vs_10x10_state_space_difference.png", dpi=300, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+
+
+def main():
+    print("Loading native monthly fields")
+    with xr.open_dataset(INPUT_FILE) as source:
+        native = harmonize(source).load()
+    print("Aggregating monthly fields to 10° × 10°")
+    coarse = aggregate_to_10deg(native)
+    print("Computing 10° × 10° global coefficients")
+    cal10, mod10 = global_coefficients(coarse)
+    print("Computing 10° × 10° Ts–EIS state-space sensitivities")
+    state_cal10, state_mod10, state_cal10_p, state_mod10_p, ts_edges, eis_edges = state_space_coefficients(coarse)
+    plot_full_figure(
+        cal10, mod10, state_cal10, state_mod10, state_cal10_p, state_mod10_p, ts_edges, eis_edges,
+        "Figure3_LCC_Sensitivity_Global_StateSpace_10degx10deg",
+    )
+    print(f"Outputs written to {OUTPUT_DIR}")
+
+
+if __name__ == "__main__":
+    main()

@@ -3,5 +3,4 @@ __pycache__/
 outputs/
 derived_intermediate/
 raw_inputs/
-data/
 .DS_Store
